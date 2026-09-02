@@ -1,8 +1,7 @@
 import os
 import requests
 from fastapi import FastAPI, Request, Response, HTTPException, BackgroundTasks
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 
 app = FastAPI()
 
@@ -10,10 +9,11 @@ VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "menim_gizli_kodum_123")
 PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-# Gemini Müştərisinin başladılması
-client = None
+# Gemini Modelinin başladılması
+model = None
 if GEMINI_API_KEY:
-    client = genai.Client(api_key=GEMINI_API_KEY.strip())
+    genai.configure(api_key=GEMINI_API_KEY.strip())
+    model = genai.GenerativeModel("gemini-1.5-flash")
 
 # RESTORANIN TƏLİMAT BAZASI VƏ MENYUSU
 SYSTEM_PROMPT = """
@@ -153,17 +153,11 @@ def verify_webhook(request: Request):
     raise HTTPException(status_code=400, detail="Xətalı sorğu")
 
 def generate_ai_reply(user_message: str) -> str:
-    if not client:
+    if not model:
         return "Salam! Zəhmət olmasa bir az sonra yazın, sistem yenilənir."
     try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=user_message,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                temperature=0.7
-            )
-        )
+        full_prompt = f"{SYSTEM_PROMPT}\n\nİstifadəçi mesajı: {user_message}\nCavab:"
+        response = model.generate_content(full_prompt)
         return response.text
     except Exception as e:
         print("GEMINI XƏTASI:", e)
