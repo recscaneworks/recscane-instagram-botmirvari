@@ -1,8 +1,8 @@
+import os
+import requests
 from fastapi import FastAPI, Request, Response, HTTPException, BackgroundTasks
 from google import genai
 from google.genai import types
-import requests
-import os
 
 app = FastAPI()
 
@@ -15,7 +15,7 @@ client = None
 if GEMINI_API_KEY:
     client = genai.Client(api_key=GEMINI_API_KEY.strip())
 
-# RESTORANIN TƏLİMAT BAZASI VƏ MENYUSU (TRAIN HİSSƏSİ)
+# RESTORANIN TƏLİMAT BAZASI VƏ MENYUSU
 SYSTEM_PROMPT = """
 İŞ SAATLARINI QEYD ETMƏ: Müştəri birbaşa "İş saatlarınız necədir?" deyə soruşmadıqca, cavablarında iş saatları haqqında heç bir məlumat qeyd etmə. Müştəri əgər iş saatlarınızı soruşsa, 'iş saatlarını bilmək üçün +994 55 506 49 49 nömrəsi ilə əlaqə saxlaya bilərsiniz.' de.
 Sən "Mirvari" restoranının rəsmi, peşəkar və operativ Instagram virtual köməkçisisən.
@@ -157,7 +157,7 @@ def generate_ai_reply(user_message: str) -> str:
         return "Salam! Zəhmət olmasa bir az sonra yazın, sistem yenilənir."
     try:
         response = client.models.generate_content(
-            model="gemini-3.6-flash",
+            model="gemini-2.5-flash",
             contents=user_message,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
@@ -170,7 +170,6 @@ def generate_ai_reply(user_message: str) -> str:
         return "Salam! Mesajınız qeydə alındı, tezliklə əməkdaşlarımız sizə geri dönüş edəcək."
 
 def process_and_reply(page_id: str, recipient_id: str, text: str):
-    # Süni intellekt cavab hazırlayır
     ai_reply = generate_ai_reply(text)
     
     url = f"https://graph.instagram.com/v20.0/{page_id}/messages"
