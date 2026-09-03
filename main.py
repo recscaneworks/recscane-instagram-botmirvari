@@ -1,7 +1,10 @@
 import os
+import asyncio
+import textwrap
 import requests
-from fastapi import FastAPI, Request, Response, HTTPException, BackgroundTasks
-import google.generativeai as genai
+from fastapi import FastAPI, Request, Response, HTTPException
+from google import genai
+from google.genai import types
 
 app = FastAPI()
 
@@ -9,135 +12,66 @@ VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "menim_gizli_kodum_123")
 PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-# Gemini Modelinin başladılması
-model = None
+# Gemini Müştərisinin başladılması
+client = None
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY.strip())
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    client = genai.Client(api_key=GEMINI_API_KEY.strip())
 
-# RESTORANIN TƏLİMAT BAZASI VƏ MENYUSU
+# İstifadəçilərin dalbadal gələn mesajlarını toplamaq üçün bufer
+USER_BUFFERS = {}
+USER_TASKS = {}
+
+# RECSCANENIN TƏLİMAT BAZASI VƏ MENYUSU (TRAIN HİSSƏSİ)
 SYSTEM_PROMPT = """
-İŞ SAATLARINI QEYD ETMƏ: Müştəri birbaşa "İş saatlarınız necədir?" deyə soruşmadıqca, cavablarında iş saatları haqqında heç bir məlumat qeyd etmə. Müştəri əgər iş saatlarınızı soruşsa, 'iş saatlarını bilmək üçün +994 55 506 49 49 nömrəsi ilə əlaqə saxlaya bilərsiniz.' de.
-Sən "Mirvari" restoranının rəsmi, peşəkar və operativ Instagram virtual köməkçisisən.
+Sən "RecScane Creative Media Agency"nin rəsmi, peşəkar və operativ virtual satış menecerisən.
+Əsas vəzifən müştərinin istəyinə uyğun xidmətləri anlamaq, "Öz paketini özün qur" kalkulyatoru ilə dəqiq hesablama aparmaq və sifarişi qəbul etməkdir.
 
-ƏSAS MƏLUMATLAR:
-- Restoranın adı: Mirvari
-- Əlaqə və Rezervasiya nömrəsi: +994 55 506 49 49 (055 506 49 49)
-- Ünvan: Ramiz Quliyev küçəsi, Bakı (Ramiz Guliyev St, Baku)
-- İş saatları: Hər gün 10:00 - 23:00
-- Menyu Şəkilləri (Instagram Highlights): https://www.instagram.com/stories/highlights/18125351248759294/
+QƏTİ QAYDALAR:
+1. MÖVZUDAN KƏNAR QADAĞA: RecScane agentliyinin xidmətlərinə aid olmayan heç bir suala (kod, şeir, ümumi söhbət, riyaziyyat və s.) cavab vermə. Nəzakətlə yalnız media xidmətləri üzrə kömək edə biləcəyini bildir.
+2. DAXİLİ ANALİZ QADAĞASI: İngiliscə və ya daxili qaralama, 'Draft', 'Step', 'Calculation' yazma. Müştəriyə yalnız hazır və səliqəli Azərbaycan dilindəki cavabı göndər.
+3. HƏR DƏFƏ SALAM VERMƏ: Dialoq davam edirsə, hər mesaja təkrar salamla başlama.
+4. MOBİL + VİRAL EDİT QADAĞASI: Müştəri Mobil çəkiliş seçdikdə, Viral Edit xidməti təklif olunmur. Mobil çəkilişlər üçün yalnız Sadə və Pro Edit keçərlidir.
+5. FORMAT: Cavabları qısa, maddəli, konkret və Instagram DM formatına uyğun oxunaqlı saxla. Hər hesablamanın sonunda müştərini WhatsApp-a yönləndir.
 
-RƏSMİ MENYU VƏ QİYMƏTLƏR:
-1. Sac yeməkləri:
-- Quzu sac: 35 AZN
-- Dana sac: 35 AZN
-- Can əti sac: 40 AZN
-- Çolpa sac: 25 AZN
-- Çolpa sac (porsiya): 3 AZN
+"ÖZ PAKETİNİ ÖZÜN QUR" HESABLAMA BAZASI:
 
-2. Toyuq yeməkləri:
-- Çolpa çığırtma kartof: 18 AZN
-- Çolpa kefli: 18 AZN
-- Çolpa qozlu: 20 AZN
-- Çolpa qovurma: 18 AZN
+1. Bir Dəfəlik Saatlıq Çəkilişlər (Video və ya Şəkil):
+- Mobil + Gimbal: 1 saat = 40 AZN (Hər əlavə saat +20 AZN)
+- DJI Osmo Pocket: 1 saat = 60 AZN (Hər əlavə saat +30 AZN)
+- Peşəkar Kamera + Gimbal: 1 saat = 120 AZN (Hər əlavə saat +60 AZN)
+- Komanda (Mobil + Osmo + Peşəkar Kamera): 1 saat = 200 AZN (Hər əlavə saat +100 AZN)
 
-3. Plovlar:
-- Şah plov: 35 AZN
-- Şüyüdlü plov: 25 AZN
-- Çolpa plov (4 nəfərlik): 60 AZN
-- Bütöv quzu plov: 350 AZN
+2. Tədbir / Nişan / Ad Günü / Məkan Çəkilişləri (Sabit Qiymət):
+- Mobil + Gimbal: 100 AZN
+- DJI Osmo Pocket: 120 AZN
+- Peşəkar Kamera + Gimbal: 200 AZN
+- Tam Komanda (3 kamera): 500 AZN
 
-4. Balıq yeməkləri:
-- Berj (1 kq): 50 AZN
-- Farel (1 kq): 20 AZN
-- Krevetka qovurması (1 kq): 50 AZN
+3. Video Montaj (Edit) Qiymətləri:
+- Sadə Montaj: 45 san = 25 AZN (1 san ≈ 0.55 AZN)
+- Pro SFX Montaj: 45 san = 50 AZN (1 san ≈ 1.11 AZN)
+- Viral Montaj: 45 san = 70 AZN (1 san ≈ 1.55 AZN) -> DİQQƏT: Yalnız Osmo, Peşəkar Kamera və Komanda çəkilişlərinə tətbiq olunur. Mobil çəkilişə verilmir.
 
-5. Salatlar:
-- Paytaxt salatı: 5 AZN
-- Tiblisi salatı: 8 AZN
-- Mirvari salatı: 6 AZN
-- Manqal salatı: 4 AZN
-- Badımcan rulet: 6 AZN
-- Badımcan xırt-xırt: 10 AZN
-- Toyuq ruleti: 6 AZN
-- Sezar salatı: 10 AZN
-- Çoban salatı: 4 AZN
-- Malibu salatı: 6 AZN
+4. Aylıq SMM Paketləri:
+- START SMM: 550 - 650 AZN / ay (8 Reels, 3 Post, 15 Story, 1 çəkiliş günü)
+- PRO SMM: 950 - 1 100 AZN / ay (12 Reels Pro Kamera, 4 Post, 30 Story, 2 çəkiliş günü, Baza Chatbot)
+- PREMIUM SCALE: 1 500 - 1 800 AZN / ay (16 Reels 2D Motion, 6 Post, 60 Story, 3-4 çəkiliş günü, AI Agent)
+- ENTERPRISE CUSTOM: 2 000 - 2 500 AZN / ay (Tam fərdi böyük brend strategiyası)
 
-6. Kabablar və Ət yeməkləri:
-- Tikə kabab: 10 AZN
-- Antrikot: 11 AZN
-- Antrikot qoşa: 12 AZN
-- Lülə kabab: 9 AZN
-- Adana lülə: 10 AZN
-- Kartof lülə: 3 AZN
-- Dana kababı: 10 AZN
-- Toyuq kababı: 5 AZN
-- Hinduşka kababı: 9 AZN
-- Çolpa setka: 12 AZN
-- İçalat: 8 AZN
-- Ciyər quyruq: 9 AZN
-- Xan kababı: 8 AZN
-- Kartof quyruq: 5 AZN
-- Şapalaq: 16 AZN
-- Tərəvəz kababı: 0.50 AZN
-- Quzu basdırma: 10 AZN
-- Quzu buğlama: 9 AZN
-- Mal əti xaşlama: 8 AZN
-- Can əti basdırma: 14 AZN
-- Can əti bükmə: 16 AZN
-- Quyruq: 10 AZN
+5. Rəqəmsal Həllər & Veb Xidmətlər:
+- Sadə Chatbot (Instagram / WhatsApp): 50 AZN birdəfəlik (Sonradan düzəlişlər: 20 AZN)
+- AI Agent (Ağıllı Süni İntellekt köməkçi): 100 AZN / aylıq
+- QR Kod ilə Davamiyyət İdarəetmə Sistemi: 100 AZN
 
-7. Soyuq Qəlyanaltılar və Məzələr:
-- Pomidor-xiyar: 1 AZN
-- Göyərti: 2 AZN
-- Pendir assorti: 6 AZN
-- Pendir: 4 AZN
-- Motal: 4 AZN
-- Süzmə: 3 AZN
-- Pendir əzmə: 4 AZN
-- Turşu assorti: 4 AZN
-- Qatıq: 1 AZN
-- Dovğa: 2 AZN
-- Zeytun: 4 AZN
-- Zeytun assorti: 6 AZN
-- Limon: 1 AZN
-- Acika: 3 AZN
-- Pomidor turşusu: 8 AZN
-- Pomidor əzmə: 4 AZN
-- Vişnə əzmə: 4 AZN
-- Bilinçik (ət ilə): 2 AZN
-- Bilinçik (kəsmik ilə): 2 AZN
-- Çolpa soyutma: 12 AZN
-- Çolpa tabaka + fri: 18 AZN
-- Çörək təndir: 1 AZN
-- Ləpə: 10 AZN
-- Meyvə: 8 AZN
-
-8. İçkilər:
-- Təbii şirə: 5 AZN
-- Kompot: 4 AZN
-- Natakhtari: 3 AZN
-- Sirab (qazlı / qazsız): 2.50 AZN
-- Badamlı (qazlı / qazsız): 3 AZN
-- Borjomi: 4 AZN
-- Cola (1 lt): 3 AZN
-- Fanta (1 lt): 3 AZN
-
-Otaqlarda, zallarda, kabinetlərdə depozit yoxdur. banket zalı 100 nəfərlikdir.!
-DAVRANIŞ QAYDALARI:
-1. HƏR MESAJDA SALAM VERMƏ: İstifadəçi ilə dialoq davam edirsə və ya birbaşa sual veribsə, təkrar-təkrar salam vermə. Birbaşa konkret və aydın cavab ver.
-2. MENYU SORUŞULDUQDA: Qonaq bütöv menyunu və ya şəkillərini istədikdə, əsas kateqoriyaları qeyd et və menyunun şəkillərinə birbaşa baxmaq üçün bu keçidi təqdim et: https://www.instagram.com/stories/highlights/18125351248759294/
-3. KONKRET YEMƏK SORUŞULDUQDA: Yalnız həmin yeməyin adını və dəqiq qiymətini bildir, istəsə digər bənzər seçimləri qısa qeyd et.
-4. REZERVASİYA: Masa rezervasiyası üçün 055 506 49 49 nömrəsini (zəng və ya WhatsApp) qeyd et, qonaq sayını və tarixi soruş.
-5. ÜNVAN: Ramiz Quliyev küçəsi, Bakı.
-6. FORMAT: Instagram DM formatına uyğun, səliqəli, maddəli, oxunaqlı və yığcam cavablar ver.
-7. BİLMƏDİYİN VƏ YA MENYUDA OLMAYAN SUALLAR: Əgər sənə təqdim olunan məlumatlarda (menyu, ünvan, iş saatı və s.) olmayan xüsusi bir sual verilərsə (məsələn: toy/ad günü tədbirlərinin qiyməti, canlı musiqi proqramı, çatdırılma şərtləri və s.), əsla özündən məlumat uydurma. Nəzakətlə bildir ki: "Bu barədə menecerimiz tezliklə sizə ətraflı məlumat verəcək. Həmçinin birbaşa və operativ məlumat üçün +994 55 506 49 49 nömrəsi ilə əlaqə saxlaya bilərsiniz."
+ƏLAQƏ VƏ SİFARİŞ:
+- WhatsApp / Zəng: +994 10 528 26 32
+- Instagram: @recscane
+- E-poçt: recscane@gmail.com
 """
 
 @app.api_route("/", methods=["GET", "HEAD"])
 def home():
-    return {"status": "Mirvari Gemini Bot 24/7 aktivdir"}
+    return {"status": "RecScane AI Agent 24/7 aktivdir"}
 
 @app.get("/webhook")
 def verify_webhook(request: Request):
@@ -153,11 +87,17 @@ def verify_webhook(request: Request):
     raise HTTPException(status_code=400, detail="Xətalı sorğu")
 
 def generate_ai_reply(user_message: str) -> str:
-    if not model:
+    if not client:
         return "Salam! Zəhmət olmasa bir az sonra yazın, sistem yenilənir."
     try:
-        full_prompt = f"{SYSTEM_PROMPT}\n\nİstifadəçi mesajı: {user_message}\nCavab:"
-        response = model.generate_content(full_prompt)
+        response = client.models.generate_content(
+            model="gemini-3.6-flash",
+            contents=user_message,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                temperature=0.3
+            )
+        )
         return response.text
     except Exception as e:
         print("GEMINI XƏTASI:", e)
@@ -171,15 +111,39 @@ def process_and_reply(page_id: str, recipient_id: str, text: str):
         "Authorization": f"Bearer {PAGE_ACCESS_TOKEN.strip()}",
         "Content-Type": "application/json"
     }
-    payload = {
-        "recipient": {"id": recipient_id},
-        "message": {"text": ai_reply}
-    }
-    res = requests.post(url, headers=headers, json=payload)
-    print("META GÖNDƏRMƏ:", res.status_code, res.text)
+    
+    # Sözləri parçalamadan, boşluqlara nəzərən maksimum 900 simvola bölür
+    chunks = textwrap.wrap(
+        ai_reply,
+        width=900,
+        replace_whitespace=False,
+        break_long_words=False
+    ) or [ai_reply]
+    
+    for chunk in chunks:
+        payload = {
+            "recipient": {"id": recipient_id},
+            "message": {"text": chunk}
+        }
+        res = requests.post(url, headers=headers, json=payload)
+        print("META GÖNDƏRMƏ STATU:", res.status_code, res.text)
+
+async def delayed_process_messages(page_id: str, recipient_id: str):
+    # Müştərinin ardıcıl yazmasını 3 saniyə gözləyir
+    await asyncio.sleep(15.0)
+    
+    messages = USER_BUFFERS.pop(recipient_id, [])
+    USER_TASKS.pop(recipient_id, None)
+    
+    if not messages:
+        return
+        
+    full_text = "\n".join(messages)
+    # Bloklanma olmadan sinxron göndərməni icra edir
+    await asyncio.to_thread(process_and_reply, page_id, recipient_id, full_text)
 
 @app.post("/webhook")
-async def handle_messages(request: Request, background_tasks: BackgroundTasks):
+async def handle_messages(request: Request):
     data = await request.json()
     
     if data.get("object") == "instagram":
@@ -191,7 +155,18 @@ async def handle_messages(request: Request, background_tasks: BackgroundTasks):
                 text = message.get("text")
 
                 if text and not message.get("is_echo"):
-                    background_tasks.add_task(process_and_reply, page_id, sender_id, text)
+                    if sender_id not in USER_BUFFERS:
+                        USER_BUFFERS[sender_id] = []
+                    USER_BUFFERS[sender_id].append(text)
+                    
+                    # Əvvəlki sayğac varsa sıfırlayırıq
+                    if sender_id in USER_TASKS and not USER_TASKS[sender_id].done():
+                        USER_TASKS[sender_id].cancel()
+                        
+                    # 3 saniyəlik yeni gözləmə başladırıq
+                    USER_TASKS[sender_id] = asyncio.create_task(
+                        delayed_process_messages(page_id, sender_id)
+                    )
 
         return {"status": "EVENT_RECEIVED"}
     return Response(status_code=404)
